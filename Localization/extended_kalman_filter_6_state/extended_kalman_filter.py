@@ -13,18 +13,20 @@ import numpy as np
 
 # Covariance for EKF simulation
 Q = np.diag([
-    0.1,  # variance of location on x-axis
-    0.1,  # variance of location on y-axis
+    0.01,  # variance of location on x-axis
+    0.01,  # variance of location on y-axis
     np.deg2rad(1.0),  # variance of yaw angle
-    1.0  # variance of velocity
+    1.0,  # variance of velocity
+    np.deg2rad(1.0) * 100, # acceleration of yaw angle
+    100  # variance of acceleraiton
 ]) ** 2  # predict state covariance
 R = np.diag([1.0, 1.0]) ** 2  # Observation x,y position covariance
-
+print("the Q:", Q)
+print("the R:", R)
 #  Simulation parameter
-INPUT_NOISE = np.diag([1.0, np.deg2rad(30.0)]) ** 2
+INPUT_NOISE = np.diag([1.0, np.deg2rad(30.0), 1.0, 1.0]) ** 2
 GPS_NOISE = np.diag([0.5, 0.5]) ** 2
-print(INPUT_NOISE)
-print(GPS_NOISE)
+
 DT = 0.1  # time tick [s]
 SIM_TIME = 50.0  # simulation time [s]
 
@@ -34,7 +36,9 @@ show_animation = 1
 def calc_input():
     v = 1.0  # [m/s]
     yawrate = 0.1  # [rad/s]
-    u = np.array([[v], [yawrate]])
+    acceleraiton = 0.000
+    angle_acceleraion = 0.000
+    u = np.array([[v], [yawrate], [acceleraiton], [angle_acceleraion]])
     return u
 
 
@@ -45,7 +49,7 @@ def observation(xTrue, xd, u):
     z = observation_model(xTrue) + GPS_NOISE @ np.random.randn(2, 1)
 
     # add noise to input
-    ud = u + INPUT_NOISE @ np.random.randn(2, 1)
+    ud = u + INPUT_NOISE @ np.random.randn(4, 1)
 
     xd = motion_model(xd, ud)
 
@@ -53,15 +57,20 @@ def observation(xTrue, xd, u):
 
 
 def motion_model(x, u):
-    F = np.array([[1.0, 0, 0, 0],
-                  [0, 1.0, 0, 0],
-                  [0, 0, 1.0, 0],
-                  [0, 0, 0, 0]])
-
-    B = np.array([[DT * math.cos(x[2, 0]), 0],
-                  [DT * math.sin(x[2, 0]), 0],
-                  [0.0, DT],
-                  [1.0, 0.0]])
+    #[X, Y, PSI, velocity, velocity_angle, acceleration]
+    F = np.array([[1.0, 0, 0, 0, 0, 0],
+                  [0, 1.0, 0, 0, 0, 0],
+                  [0, 0, 1.0, 0, 0, 0],
+                  [0, 0, 0, 1.0, 0, 0],
+                  [0, 0, 0, 0, 1.0, 0],
+                  [0, 0, 0, 0, 0, 0.0]])
+    #[velocity, angle_velocity, acceleration, angle_acceleraion]
+    B = np.array([[DT * math.cos(x[2, 0]), 0, 0, 0],
+                  [DT * math.sin(x[2, 0]), 0, 0, 0],
+                  [0.0, DT, 0, 0],
+                  [0.0, 0, DT, 0],
+                  [0, 0, 0, DT],
+                  [0.0, 0.0, 1.0, 0.0]])
 
     x = F @ x + B @ u
 
@@ -70,8 +79,8 @@ def motion_model(x, u):
 
 def observation_model(x):
     H = np.array([
-        [1, 0, 0, 0],
-        [0, 1, 0, 0]
+        [1, 0, 0, 0, 0, 0],
+        [0, 1, 0, 0, 0, 0]
     ])
 
     z = H @ x
@@ -97,10 +106,12 @@ def jacob_f(x, u):
     yaw = x[2, 0]
     v = u[0, 0]
     jF = np.array([
-        [1.0, 0.0, -DT * v * math.sin(yaw), DT * math.cos(yaw)],
-        [0.0, 1.0, DT * v * math.cos(yaw), DT * math.sin(yaw)],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0]])
+        [1.0, 0.0, -DT * v * math.sin(yaw), DT * math.cos(yaw), 0.0, 0.0],
+        [0.0, 1.0, DT * v * math.cos(yaw), DT * math.sin(yaw), 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0, DT, 0.0],
+        [0.0, 0.0, 0.0, 1.0, 0.0, DT],
+        [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 1.0] ])
 
     return jF
 
@@ -108,8 +119,8 @@ def jacob_f(x, u):
 def jacob_h():
     # Jacobian of Observation Model
     jH = np.array([
-        [1, 0, 0, 0],
-        [0, 1, 0, 0]
+        [1, 0, 0, 0, 0, 0],
+        [0, 1, 0, 0, 0, 0]
     ])
 
     return jH
@@ -164,11 +175,11 @@ def main():
     time = 0.0
 
     # State Vector [x y yaw v]'
-    xEst = np.zeros((4, 1))
-    xTrue = np.zeros((4, 1))
-    PEst = np.eye(4)
+    xEst = np.zeros((6, 1))
+    xTrue = np.zeros((6, 1))
+    PEst = np.eye(6)
 
-    xDR = np.zeros((4, 1))  # Dead reckoning
+    xDR = np.zeros((6, 1))  # Dead reckoning
 
     # history
     hxEst = xEst
